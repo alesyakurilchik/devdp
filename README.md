@@ -1,152 +1,283 @@
-# Microservices CI/CD Pipeline
+# DevDP — DevOps Final Project
 
-[![Frontend CI/CD](https://github.com/pedramnj/react-fastapi-docker/actions/workflows/frontend-ci.yml/badge.svg)](https://github.com/pedramnj/react-fastapi-docker/actions/workflows/frontend-ci.yml)
-[![Backend CI/CD](https://github.com/pedramnj/react-fastapi-docker/actions/workflows/backend-ci.yml/badge.svg)](https://github.com/pedramnj/react-fastapi-docker/actions/workflows/backend-ci.yml)
+DevOps-проект с полностью автоматизированным созданием инфраструктуры,
+конфигурацией серверов, CI/CD, мониторингом и Telegram-уведомлениями.
 
-A production-ready CI/CD pipeline featuring a React frontend and FastAPI backend, containerized with Docker and deployed via GitHub Actions with HTTPS, monitoring, and infrastructure as code.
+## Архитектура
 
-## Architecture
+Проект использует две виртуальные машины в Yandex Cloud:
 
-![CI/CD Architecture](devops.png)
+- `devdp-app` — приложение;
+- `devdp-monitoring` — мониторинг и bastion host.
 
-## Tech Stack
+Общая схема:
 
-| Component | Technology |
-|-----------|------------|
-| Frontend | React 19, Vite, TypeScript |
-| Backend | FastAPI, Python 3.12, Uvicorn |
-| Containerization | Docker, Docker Compose |
-| CI/CD | GitHub Actions |
-| Registry | GitHub Container Registry (ghcr.io) |
-| Server | Ubuntu 22.04 (ARM64) |
+GitHub → GitHub Actions → devdp-monitoring → private network → devdp-app
 
-## Project Structure
+На `devdp-app` работают:
 
-```
-.
-├── .github/workflows/
-│   ├── frontend-ci.yml      # Frontend pipeline
-│   ├── backend-ci.yml       # Backend pipeline
-│   └── deploy-all.yml       # Full deployment
-├── frontend/
-│   ├── src/                 # React source code
-│   ├── Dockerfile           # Multi-stage Docker build
-│   └── nginx.conf           # Nginx configuration
-├── backend/
-│   ├── app/                 # FastAPI application
-│   ├── tests/               # Pytest tests
-│   └── Dockerfile           # Multi-stage Docker build
-├── docker-compose.yml       # Local development
-└── docker-compose.staging.yml  # Staging deployment
-```
+- PostgreSQL;
+- FastAPI backend;
+- React frontend;
+- Nginx;
+- Node Exporter.
 
-## Quick Start
+На `devdp-monitoring` работают:
 
-### Local Development
+- Prometheus;
+- Grafana;
+- Alertmanager;
+- Blackbox Exporter;
+- Node Exporter.
 
-```bash
-# Clone the repository
-git clone https://github.com/pedramnj/react-fastapi-docker.git
-cd react-fastapi-docker
+## Технологии
 
-# Start all services
-docker compose up -d
+- Ubuntu Server 24.04
+- Yandex Cloud
+- Terraform
+- Ansible
+- Docker
+- Docker Compose
+- Git
+- GitHub
+- GitHub Actions
+- GitHub Container Registry
+- PostgreSQL
+- FastAPI
+- React
+- Nginx
+- Prometheus
+- Grafana
+- Alertmanager
+- Blackbox Exporter
+- Node Exporter
+- Telegram Bot API
 
-# Access the applications
-# Frontend: http://localhost:3000
-# Backend: http://localhost:8000
-# API Docs: http://localhost:8000/docs
-```
+## Структура проекта
 
-### Run Tests
+    devdp/
+    ├── .github/
+    │   └── workflows/
+    │       └── ci-cd.yml
+    ├── ansible/
+    │   ├── inventory/
+    │   ├── playbooks/
+    │   │   ├── site.yml
+    │   │   └── monitoring.yml
+    │   └── roles/
+    │       ├── common/
+    │       ├── docker/
+    │       ├── app/
+    │       ├── monitoring/
+    │       └── node_exporter/
+    ├── backend/
+    ├── frontend/
+    ├── infra/
+    │   └── terraform/
+    ├── scripts/
+    │   ├── bootstrap.sh
+    │   └── generate_inventory.sh
+    ├── docs/
+    │   └── RUNBOOK.md
+    ├── docker-compose.yml
+    ├── docker-compose.deploy.yml
+    ├── Makefile
+    └── README.md
 
-```bash
-# Frontend tests
-cd frontend && npm run test:run
+## Infrastructure as Code
 
-# Backend tests
-cd backend && pip install -r requirements-dev.txt && pytest
-```
+Terraform создаёт инфраструктуру в Yandex Cloud:
 
-## CI/CD Pipeline
+- Virtual Private Cloud;
+- subnet;
+- Security Groups;
+- VM `devdp-app`;
+- VM `devdp-monitoring`;
+- публичные и приватные IP-адреса.
 
-### Pipeline Stages
+Проверка Terraform:
 
-1. **Lint**: Code quality checks (ESLint for frontend, Ruff for backend)
-2. **Test**: Unit tests with coverage reporting
-3. **Build**: Multi-stage Docker image build
-4. **Push**: Push images to GitHub Container Registry
-5. **Deploy**: SSH deployment to staging server
+    terraform -chdir=infra/terraform validate
 
-### Triggers
+Просмотр ресурсов:
 
-- **Frontend CI**: Push/PR to `main` with changes in `frontend/`
-- **Backend CI**: Push/PR to `main` with changes in `backend/`
-- **Deploy All**: Manual trigger or changes to `docker-compose.staging.yml`
+    terraform -chdir=infra/terraform plan
 
-## API Endpoints
+## Configuration Management
 
-| Endpoint | Method | Description |
-|----------|--------|-------------|
-| `/` | GET | API root, returns status |
-| `/health` | GET | Health check endpoint |
-| `/api/info` | GET | Application information |
-| `/api/items` | GET | Sample data endpoint |
-| `/docs` | GET | Swagger UI documentation |
+Ansible автоматически настраивает обе виртуальные машины.
 
-## Deployment
+Основной playbook:
 
-### Server Requirements
+    ansible/playbooks/site.yml
 
-- Ubuntu 22.04+
-- Docker and Docker Compose
-- UFW firewall (ports 22, 80, 443, 8000)
-- Dedicated deploy user with Docker access
+Monitoring playbook:
 
-### Manual Deployment
+    ansible/playbooks/monitoring.yml
 
-```bash
-# SSH to server
-ssh deploy@37.27.25.159
+Проверка доступности:
 
-# Navigate to app directory
-cd /opt/devops
+    cd ansible
+    ansible all -m ping
 
-# Pull latest images
-docker compose -f docker-compose.staging.yml pull
+Повторный запуск playbook не изменяет уже настроенные базовые ресурсы,
+что подтверждает идемпотентность конфигурации.
 
-# Deploy
-docker compose -f docker-compose.staging.yml up -d
-```
+## One-command deployment
 
-### Environment Variables
+Полное развёртывание выполняется одной командой:
 
-| Variable | Description | Default |
-|----------|-------------|---------|
-| `VITE_API_URL` | Backend API URL (frontend) | `http://localhost:8000` |
-| `DEBUG` | Debug mode (backend) | `false` |
-| `CORS_ORIGINS` | Allowed CORS origins (backend) | `http://localhost:3000` |
+    make bootstrap
 
-## GitHub Secrets
+Она автоматически выполняет:
 
-Required secrets for CI/CD:
+1. проверку необходимых инструментов;
+2. Terraform init;
+3. Terraform apply;
+4. получение IP виртуальных машин;
+5. обновление GitHub Actions Secrets;
+6. генерацию Ansible inventory;
+7. ожидание доступности VM;
+8. настройку серверов через Ansible;
+9. deployment приложения;
+10. deployment monitoring stack;
+11. health checks.
 
-| Secret | Description |
-|--------|-------------|
-| `SSH_PRIVATE_KEY` | SSH key for server access |
-| `STAGING_HOST` | Staging server IP address |
-| `STAGING_USER` | SSH user for deployment |
+Проверка конфигураций без deployment:
 
-## Documentation
+    make check
 
-- [Architecture Details](docs/ARCHITECTURE.md)
-- [Setup Guide](docs/SETUP.md)
-- [Deployment Guide](docs/DEPLOYMENT.md)
+## Application
 
-## License
+На `devdp-app` запускаются:
 
-MIT License
+- PostgreSQL;
+- FastAPI backend;
+- React/Nginx frontend.
 
-## Author
+Проверка backend:
 
-Pedram Nikjooy - DevOps Portfolio Project
+    curl http://APP_IP:8000/health
+
+Ожидаемый ответ:
+
+    {"status":"healthy","database":"connected"}
+
+Frontend:
+
+    http://APP_IP:3000
+
+FastAPI documentation:
+
+    http://APP_IP:8000/docs
+
+## CI/CD
+
+Pipeline находится в:
+
+    .github/workflows/ci-cd.yml
+
+Для push в любую ветку выполняются:
+
+- backend lint;
+- backend tests;
+- frontend lint;
+- TypeScript check;
+- frontend tests;
+- frontend build;
+- Docker build;
+- smoke tests;
+- создание Docker artifact.
+
+Для `main` дополнительно выполняются:
+
+- публикация Docker images в GHCR;
+- автоматический deployment в Yandex Cloud;
+- post-deploy smoke tests;
+- Telegram notification.
+
+Deployment выполняется через `devdp-monitoring`, используемый как
+bastion host. Доступ к `devdp-app` выполняется по private IP.
+
+## GitHub Container Registry
+
+После успешной сборки ветки `main` backend и frontend Docker images
+публикуются в GitHub Container Registry.
+
+Используются теги:
+
+- SHA текущего commit;
+- `latest`.
+
+## Monitoring
+
+Prometheus собирает системные метрики обеих VM через Node Exporter.
+
+Blackbox Exporter проверяет:
+
+- backend;
+- frontend.
+
+Grafana использует Prometheus как datasource.
+
+Основной dashboard:
+
+    DevDP Overview
+
+Настроены alert rules:
+
+- `ApplicationEndpointDown`;
+- `NodeExporterDown`;
+- `HighMemoryUsage`.
+
+## Telegram notifications
+
+После выполнения GitHub Actions pipeline Telegram-бот отправляет
+результат CI/CD.
+
+Уведомление содержит:
+
+- SUCCESS / FAILED;
+- repository;
+- branch;
+- commit;
+- backend checks;
+- frontend checks;
+- Docker build;
+- deployment result;
+- ссылку на GitHub Actions run.
+
+## GitHub Actions Secrets
+
+Используются:
+
+    APP_HOST
+    APP_PRIVATE_HOST
+    APP_USER
+    MON_HOST
+    SSH_PRIVATE_KEY
+    TELEGRAM_BOT_TOKEN
+    TELEGRAM_CHAT_ID
+
+Значения секретов не хранятся в Git.
+
+## Security
+
+В репозиторий не добавляются:
+
+- `.env`;
+- SSH private keys;
+- Yandex Cloud service account key;
+- Terraform state;
+- Telegram Bot Token;
+- динамический Ansible inventory с IP.
+
+## Удаление инфраструктуры
+
+После завершения демонстрации:
+
+    terraform -chdir=infra/terraform destroy
+
+Перед удалением можно посмотреть план:
+
+    terraform -chdir=infra/terraform plan -destroy
