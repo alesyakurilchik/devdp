@@ -278,6 +278,7 @@ jobs:
   deploy:
     name: Deploy to Yandex Cloud
     runs-on: ubuntu-latest
+
     needs:
       - build
       - publish
@@ -293,86 +294,89 @@ jobs:
         with:
           name: devdp-images-${{ github.sha }}
 
-      - name: Configure SSH key
+      - name: Configure SSH through monitoring bastion
         env:
           SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
+          MON_HOST: ${{ secrets.MON_HOST }}
+          APP_PRIVATE_HOST: ${{ secrets.APP_PRIVATE_HOST }}
+          APP_USER: ${{ secrets.APP_USER }}
         run: |
           mkdir -p ~/.ssh
+
           printf '%s\n' "$SSH_PRIVATE_KEY" > ~/.ssh/devdp_ci
           chmod 600 ~/.ssh/devdp_ci
 
+          cat > ~/.ssh/config <<EOF
+          Host devdp-bastion
+            HostName ${MON_HOST}
+            User ${APP_USER}
+            IdentityFile ~/.ssh/devdp_ci
+            IdentitiesOnly yes
+            StrictHostKeyChecking accept-new
+            ConnectTimeout 15
+            ConnectionAttempts 3
+            ServerAliveInterval 5
+            ServerAliveCountMax 3
+
+          Host devdp-app
+            HostName ${APP_PRIVATE_HOST}
+            User ${APP_USER}
+            IdentityFile ~/.ssh/devdp_ci
+            IdentitiesOnly yes
+            ProxyJump devdp-bastion
+            StrictHostKeyChecking accept-new
+            ConnectTimeout 15
+            ConnectionAttempts 3
+            ServerAliveInterval 5
+            ServerAliveCountMax 3
+          EOF
+
+          chmod 600 ~/.ssh/config
+
       - name: Wait for application server SSH
-        env:
-          APP_HOST: ${{ secrets.APP_HOST }}
-          APP_USER: ${{ secrets.APP_USER }}
         run: |
           READY=0
 
           for attempt in $(seq 1 8); do
-            if ssh \
-              -i ~/.ssh/devdp_ci \
-              -o StrictHostKeyChecking=accept-new \
-              -o ConnectTimeout=15 \
-              "${APP_USER}@${APP_HOST}" \
-              'echo SSH_OK'
-            then
+            if ssh devdp-app 'echo SSH_OK'; then
               READY=1
               break
             fi
 
-            echo "SSH attempt ${attempt} failed"
+            echo "SSH attempt ${attempt}/8 failed"
             sleep 10
           done
 
           test "$READY" -eq 1
 
       - name: Prepare application directory
-        env:
-          APP_HOST: ${{ secrets.APP_HOST }}
-          APP_USER: ${{ secrets.APP_USER }}
         run: |
-          ssh \
-            -i ~/.ssh/devdp_ci \
-            -o StrictHostKeyChecking=accept-new \
-            "${APP_USER}@${APP_HOST}" \
-            "sudo mkdir -p /opt/devdp && sudo chown ${APP_USER}:${APP_USER} /opt/devdp"
+          ssh devdp-app \
+            'sudo mkdir -p /opt/devdp && sudo chown ubuntu:ubuntu /opt/devdp'
 
       - name: Upload deployment artifact
-        env:
-          APP_HOST: ${{ secrets.APP_HOST }}
-          APP_USER: ${{ secrets.APP_USER }}
         run: |
           SUCCESS=0
 
           for attempt in $(seq 1 6); do
             if scp \
-              -i ~/.ssh/devdp_ci \
-              -o StrictHostKeyChecking=accept-new \
-              -o ConnectTimeout=20 \
               docker-compose.deploy.yml \
               devdp-images.tar.gz \
-              "${APP_USER}@${APP_HOST}:/opt/devdp/"
+              devdp-app:/opt/devdp/
             then
               SUCCESS=1
               break
             fi
 
-            echo "SCP attempt ${attempt} failed"
+            echo "SCP attempt ${attempt}/6 failed"
             sleep 10
           done
 
           test "$SUCCESS" -eq 1
 
       - name: Deploy application
-        env:
-          APP_HOST: ${{ secrets.APP_HOST }}
-          APP_USER: ${{ secrets.APP_USER }}
         run: |
-          ssh \
-            -i ~/.ssh/devdp_ci \
-            -o StrictHostKeyChecking=accept-new \
-            "${APP_USER}@${APP_HOST}" \
-            'bash -s' <<'REMOTE'
+          ssh devdp-app 'bash -s' <<'REMOTE'
           set -euo pipefail
 
           cd /opt/devdp
@@ -397,7 +401,8 @@ jobs:
           READY=0
 
           for attempt in $(seq 1 30); do
-            if curl -fsS \
+            if curl \
+              -fsS \
               http://127.0.0.1:8000/health \
               >/dev/null
             then
@@ -405,13 +410,21 @@ jobs:
               break
             fi
 
+            echo "Waiting for backend: ${attempt}/30"
             sleep 3
           done
 
           test "$READY" -eq 1
 
+          echo "===== BACKEND ====="
           curl -fsS http://127.0.0.1:8000/health
+          echo
+
+          echo "===== FRONTEND ====="
           curl -fsS http://127.0.0.1:3000/ >/dev/null
+          echo "Frontend: OK"
+
+          echo "===== CONTAINERS ====="
 
           docker compose \
             -f docker-compose.deploy.yml \
@@ -426,6 +439,7 @@ jobs:
             --retry 8 \
             --retry-delay 5 \
             --connect-timeout 15 \
+            --max-time 20 \
             -fsS \
             "http://${APP_HOST}:8000/health"
 
@@ -433,6 +447,7 @@ jobs:
             --retry 8 \
             --retry-delay 5 \
             --connect-timeout 15 \
+            --max-time 20 \
             -fsS \
             "http://${APP_HOST}:3000/" \
             >/dev/null
