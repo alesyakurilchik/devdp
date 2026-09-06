@@ -1,0 +1,70 @@
+---
+- name: Pull node exporter image on controller
+  ansible.builtin.command:
+    cmd: docker pull prom/node-exporter:v1.8.2
+  delegate_to: localhost
+  become: false
+  run_once: true
+  changed_when: false
+
+- name: Save node exporter image on controller
+  ansible.builtin.shell: |
+    set -o pipefail
+    docker save prom/node-exporter:v1.8.2 |
+      gzip -n > /tmp/devdp-node-exporter.tar.gz
+  args:
+    executable: /bin/bash
+  delegate_to: localhost
+  become: false
+  run_once: true
+  changed_when: false
+
+- name: Check node exporter image on remote host
+  ansible.builtin.command:
+    cmd: docker image inspect prom/node-exporter:v1.8.2
+  register: node_exporter_image
+  failed_when: false
+  changed_when: false
+
+- name: Copy node exporter image to remote host
+  ansible.builtin.copy:
+    src: /tmp/devdp-node-exporter.tar.gz
+    dest: /tmp/devdp-node-exporter.tar.gz
+    mode: "0644"
+  when: node_exporter_image.rc != 0
+
+- name: Load node exporter image on remote host
+  ansible.builtin.command:
+    cmd: docker load -i /tmp/devdp-node-exporter.tar.gz
+  when: node_exporter_image.rc != 0
+  register: node_exporter_load
+  changed_when: true
+
+- name: Check node exporter container
+  ansible.builtin.command:
+    cmd: docker inspect node-exporter
+  register: node_exporter_container
+  failed_when: false
+  changed_when: false
+
+- name: Run node exporter
+  ansible.builtin.command:
+    cmd: >
+      docker run -d
+      --name node-exporter
+      --restart unless-stopped
+      --network host
+      --pid host
+      -v /:/host:ro,rslave
+      prom/node-exporter:v1.8.2
+      --path.rootfs=/host
+  when: node_exporter_container.rc != 0
+
+- name: Wait for node exporter
+  ansible.builtin.uri:
+    url: http://127.0.0.1:9100/metrics
+    status_code: 200
+  register: node_exporter_health
+  retries: 15
+  delay: 2
+  until: node_exporter_health.status == 200

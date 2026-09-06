@@ -1,0 +1,16 @@
+---
+- name: Deploy node exporter
+  hosts: all
+  become: true
+  gather_facts: false
+
+  roles:
+    - node_exporter
+
+- name: Deploy monitoring stack
+  hosts: monitoring
+  become: true
+  gather_facts: false
+
+  roles:
+    - monitoring

@@ -1,0 +1,366 @@
+---
+- name: Create monitoring directories
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    mode: "0755"
+  loop:
+    - /opt/devdp-monitoring
+    - /opt/devdp-monitoring/prometheus
+    - /opt/devdp-monitoring/alertmanager
+    - /opt/devdp-monitoring/blackbox
+    - /opt/devdp-monitoring/grafana
+    - /opt/devdp-monitoring/grafana/provisioning
+    - /opt/devdp-monitoring/grafana/provisioning/datasources
+    - /opt/devdp-monitoring/grafana/provisioning/dashboards
+    - /opt/devdp-monitoring/grafana/dashboards
+
+- name: Create monitoring environment file
+  ansible.builtin.shell: |
+    set -e
+    umask 077
+
+    PASSWORD="$(openssl rand -hex 16)"
+
+    cat > /opt/devdp-monitoring/.env <<EOF
+    GRAFANA_ADMIN_PASSWORD=${PASSWORD}
+    EOF
+  args:
+    executable: /bin/bash
+    creates: /opt/devdp-monitoring/.env
+  no_log: true
+
+- name: Create Prometheus configuration
+  ansible.builtin.copy:
+    dest: /opt/devdp-monitoring/prometheus/prometheus.yml
+    mode: "0644"
+    content: |
+      global:
+        scrape_interval: 15s
+        evaluation_interval: 15s
+
+      rule_files:
+        - /etc/prometheus/alerts.yml
+
+      alerting:
+        alertmanagers:
+          - static_configs:
+              - targets:
+                  - alertmanager:9093
+
+      scrape_configs:
+        - job_name: node-exporter
+          static_configs:
+            - targets:
+                - "{{ hostvars['devdp-app']['private_ip'] }}:9100"
+                - "{{ hostvars['devdp-monitoring']['private_ip'] }}:9100"
+
+        - job_name: blackbox-http
+          metrics_path: /probe
+          params:
+            module:
+              - http_2xx
+          static_configs:
+            - targets:
+                - "http://{{ hostvars['devdp-app']['private_ip'] }}:8000/health"
+                - "http://{{ hostvars['devdp-app']['private_ip'] }}:3000/"
+          relabel_configs:
+            - source_labels:
+                - __address__
+              target_label: __param_target
+            - source_labels:
+                - __param_target
+              target_label: instance
+            - target_label: __address__
+              replacement: blackbox:9115
+
+- name: Create Prometheus alert rules
+  ansible.builtin.copy:
+    dest: /opt/devdp-monitoring/prometheus/alerts.yml
+    mode: "0644"
+    content: |
+      groups:
+        - name: devdp-alerts
+          rules:
+
+            - alert: ApplicationEndpointDown
+              expr: probe_success{job="blackbox-http"} == 0
+              for: 1m
+              labels:
+                severity: critical
+              annotations:
+                summary: "DevDP application endpoint is unavailable"
+                description: "HTTP endpoint {{ '{{' }} $labels.instance {{ '}}' }} is unavailable."
+
+            - alert: NodeExporterDown
+              expr: up{job="node-exporter"} == 0
+              for: 1m
+              labels:
+                severity: critical
+              annotations:
+                summary: "Node exporter is unavailable"
+                description: "Node exporter {{ '{{' }} $labels.instance {{ '}}' }} is unavailable."
+
+            - alert: HighMemoryUsage
+              expr: 100 * (1 - (node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes)) > 85
+              for: 5m
+              labels:
+                severity: warning
+              annotations:
+                summary: "High memory usage"
+                description: "Memory usage is above 85% on {{ '{{' }} $labels.instance {{ '}}' }}."
+
+- name: Create Alertmanager configuration
+  ansible.builtin.copy:
+    dest: /opt/devdp-monitoring/alertmanager/alertmanager.yml
+    mode: "0644"
+    content: |
+      route:
+        receiver: default
+        group_wait: 10s
+        group_interval: 30s
+        repeat_interval: 1h
+
+      receivers:
+        - name: default
+
+- name: Create Blackbox Exporter configuration
+  ansible.builtin.copy:
+    dest: /opt/devdp-monitoring/blackbox/blackbox.yml
+    mode: "0644"
+    content: |
+      modules:
+        http_2xx:
+          prober: http
+          timeout: 5s
+          http:
+            method: GET
+            preferred_ip_protocol: ip4
+
+- name: Create Grafana Prometheus datasource
+  ansible.builtin.copy:
+    dest: /opt/devdp-monitoring/grafana/provisioning/datasources/prometheus.yml
+    mode: "0644"
+    content: |
+      apiVersion: 1
+
+      datasources:
+        - name: Prometheus
+          type: prometheus
+          uid: prometheus
+          access: proxy
+          url: http://prometheus:9090
+          isDefault: true
+          editable: false
+
+- name: Create Grafana dashboard provider
+  ansible.builtin.copy:
+    dest: /opt/devdp-monitoring/grafana/provisioning/dashboards/provider.yml
+    mode: "0644"
+    content: |
+      apiVersion: 1
+
+      providers:
+        - name: DevDP
+          orgId: 1
+          folder: DevDP
+          type: file
+          disableDeletion: false
+          updateIntervalSeconds: 30
+          options:
+            path: /var/lib/grafana/dashboards
+
+- name: Create DevDP Grafana dashboard
+  ansible.builtin.copy:
+    dest: /opt/devdp-monitoring/grafana/dashboards/devdp.json
+    mode: "0644"
+    content: |
+      {
+        "annotations": {
+          "list": []
+        },
+        "editable": true,
+        "panels": [
+          {
+            "datasource": {
+              "type": "prometheus",
+              "uid": "prometheus"
+            },
+            "fieldConfig": {
+              "defaults": {
+                "unit": "percent"
+              }
+            },
+            "gridPos": {
+              "h": 8,
+              "w": 12,
+              "x": 0,
+              "y": 0
+            },
+            "id": 1,
+            "targets": [
+              {
+                "expr": "100 - (avg by(instance) (rate(node_cpu_seconds_total{mode=\"idle\"}[5m])) * 100)",
+                "legendFormat": "{{ '{{' }}instance{{ '}}' }}",
+                "refId": "A"
+              }
+            ],
+            "title": "CPU usage",
+            "type": "timeseries"
+          },
+          {
+            "datasource": {
+              "type": "prometheus",
+              "uid": "prometheus"
+            },
+            "fieldConfig": {
+              "defaults": {
+                "unit": "percent"
+              }
+            },
+            "gridPos": {
+              "h": 8,
+              "w": 12,
+              "x": 12,
+              "y": 0
+            },
+            "id": 2,
+            "targets": [
+              {
+                "expr": "100 * (1 - (node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes))",
+                "legendFormat": "{{ '{{' }}instance{{ '}}' }}",
+                "refId": "A"
+              }
+            ],
+            "title": "Memory usage",
+            "type": "timeseries"
+          },
+          {
+            "datasource": {
+              "type": "prometheus",
+              "uid": "prometheus"
+            },
+            "gridPos": {
+              "h": 8,
+              "w": 24,
+              "x": 0,
+              "y": 8
+            },
+            "id": 3,
+            "targets": [
+              {
+                "expr": "probe_success{job=\"blackbox-http\"}",
+                "legendFormat": "{{ '{{' }}instance{{ '}}' }}",
+                "refId": "A"
+              }
+            ],
+            "title": "Application HTTP availability",
+            "type": "timeseries"
+          }
+        ],
+        "refresh": "15s",
+        "schemaVersion": 39,
+        "tags": [
+          "devdp",
+          "devops"
+        ],
+        "templating": {
+          "list": []
+        },
+        "time": {
+          "from": "now-1h",
+          "to": "now"
+        },
+        "timezone": "browser",
+        "title": "DevDP Overview",
+        "uid": "devdp-overview",
+        "version": 1
+      }
+
+- name: Create monitoring Docker Compose configuration
+  ansible.builtin.copy:
+    dest: /opt/devdp-monitoring/docker-compose.yml
+    mode: "0644"
+    content: |
+      services:
+
+        prometheus:
+          image: prom/prometheus:v2.54.1
+          restart: unless-stopped
+          ports:
+            - "9090:9090"
+          volumes:
+            - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+            - ./prometheus/alerts.yml:/etc/prometheus/alerts.yml:ro
+            - prometheus_data:/prometheus
+          command:
+            - --config.file=/etc/prometheus/prometheus.yml
+            - --storage.tsdb.path=/prometheus
+
+        alertmanager:
+          image: prom/alertmanager:v0.27.0
+          restart: unless-stopped
+          ports:
+            - "9093:9093"
+          volumes:
+            - ./alertmanager/alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
+
+        blackbox:
+          image: prom/blackbox-exporter:v0.25.0
+          restart: unless-stopped
+          volumes:
+            - ./blackbox/blackbox.yml:/etc/blackbox_exporter/config.yml:ro
+
+        grafana:
+          image: grafana/grafana:11.2.0
+          restart: unless-stopped
+          ports:
+            - "3000:3000"
+          environment:
+            GF_SECURITY_ADMIN_USER: admin
+            GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD}
+          volumes:
+            - grafana_data:/var/lib/grafana
+            - ./grafana/provisioning:/etc/grafana/provisioning:ro
+            - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
+
+      volumes:
+        prometheus_data:
+        grafana_data:
+
+- name: Start monitoring stack
+  ansible.builtin.command:
+    cmd: docker compose up -d
+    chdir: /opt/devdp-monitoring
+  register: monitoring_compose
+  changed_when: >
+    'Created' in monitoring_compose.stdout or
+    'Started' in monitoring_compose.stdout or
+    'Recreated' in monitoring_compose.stdout
+
+- name: Wait for Prometheus
+  ansible.builtin.uri:
+    url: http://127.0.0.1:9090/-/ready
+    status_code: 200
+  register: prometheus_ready
+  retries: 30
+  delay: 3
+  until: prometheus_ready.status == 200
+
+- name: Wait for Grafana
+  ansible.builtin.uri:
+    url: http://127.0.0.1:3000/api/health
+    status_code: 200
+  register: grafana_ready
+  retries: 30
+  delay: 3
+  until: grafana_ready.status == 200
+
+- name: Wait for Alertmanager
+  ansible.builtin.uri:
+    url: http://127.0.0.1:9093/-/ready
+    status_code: 200
+  register: alertmanager_ready
+  retries: 30
+  delay: 3
+  until: alertmanager_ready.status == 200
