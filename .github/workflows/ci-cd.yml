@@ -469,25 +469,29 @@ jobs:
             ps
           REMOTE
 
-      - name: External smoke tests
+      - name: Post-deploy smoke tests through bastion
         env:
-          APP_HOST: ${{ secrets.APP_HOST }}
+          APP_PRIVATE_HOST: ${{ secrets.APP_PRIVATE_HOST }}
         run: |
-          curl \
-            --retry 8 \
-            --retry-delay 5 \
-            --connect-timeout 15 \
-            --max-time 20 \
-            -fsS \
-            "http://${APP_HOST}:8000/health"
+          echo "===== BACKEND THROUGH PRIVATE NETWORK ====="
 
-          curl \
-            --retry 8 \
-            --retry-delay 5 \
-            --connect-timeout 15 \
+          ssh devdp-bastion \
+            "curl --fail --silent --show-error \
+            --connect-timeout 10 \
             --max-time 20 \
-            -fsS \
-            "http://${APP_HOST}:3000/" \
-            >/dev/null
+            http://${APP_PRIVATE_HOST}:8000/health"
 
+          echo
+          echo "Backend: OK"
+
+          echo "===== FRONTEND THROUGH PRIVATE NETWORK ====="
+
+          ssh devdp-bastion \
+            "curl --fail --silent --show-error \
+            --connect-timeout 10 \
+            --max-time 20 \
+            http://${APP_PRIVATE_HOST}:3000/ \
+            >/dev/null"
+
+          echo "Frontend: OK"
           echo "Deployment smoke tests passed"
