@@ -1,0 +1,9 @@
+---
+- name: Configure DevOps project servers
+  hosts: all
+  become: true
+
+  roles:
+    - common
+    - docker
+
