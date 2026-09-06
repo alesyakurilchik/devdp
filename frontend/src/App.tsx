@@ -217,7 +217,7 @@ function App() {
 
         <footer>
           <a
-            href="https://github.com/pedramnj/react-fastapi-docker"
+            href="https://github.com/alesyakurilchik/devdp"
             target="_blank"
             rel="noopener noreferrer"
             className="footer-link"

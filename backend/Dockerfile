@@ -15,7 +15,7 @@ RUN pip install --no-cache-dir --upgrade pip && \
 # Production stage
 FROM python:3.12-slim AS production
 
-LABEL org.opencontainers.image.source=https://github.com/pedramnj/react-fastapi-docker
+LABEL org.opencontainers.image.source=https://github.com/alesyakurilchik/devdp
 
 WORKDIR /app
 

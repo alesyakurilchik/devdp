@@ -14,7 +14,7 @@ RUN npm run build
 # Production stage
 FROM nginx:alpine AS production
 
-LABEL org.opencontainers.image.source=https://github.com/pedramnj/react-fastapi-docker
+LABEL org.opencontainers.image.source=https://github.com/alesyakurilchik/devdp
 
 COPY nginx.conf /etc/nginx/conf.d/default.conf
 
