@@ -1,0 +1,112 @@
+---
+- name: Create application directory
+  ansible.builtin.file:
+    path: /opt/devdp
+    state: directory
+    owner: ubuntu
+    group: ubuntu
+    mode: "0755"
+
+- name: Copy backend source
+  ansible.builtin.copy:
+    src: "{{ playbook_dir }}/../../backend/"
+    dest: /opt/devdp/backend/
+    owner: ubuntu
+    group: ubuntu
+    mode: preserve
+
+- name: Copy frontend source
+  ansible.builtin.copy:
+    src: "{{ playbook_dir }}/../../frontend/"
+    dest: /opt/devdp/frontend/
+    owner: ubuntu
+    group: ubuntu
+    mode: preserve
+
+- name: Copy Docker Compose configuration
+  ansible.builtin.copy:
+    src: "{{ playbook_dir }}/../../docker-compose.yml"
+    dest: /opt/devdp/docker-compose.yml
+    owner: ubuntu
+    group: ubuntu
+    mode: "0644"
+
+- name: Create application environment file if missing
+  ansible.builtin.shell: |
+    set -e
+    umask 077
+
+    PASSWORD="$(openssl rand -hex 16)"
+
+    cat > /opt/devdp/.env <<EOF
+    POSTGRES_USER=devops
+    POSTGRES_PASSWORD=${PASSWORD}
+    POSTGRES_DB=devops
+    EOF
+
+    chown ubuntu:ubuntu /opt/devdp/.env
+  args:
+    executable: /bin/bash
+    creates: /opt/devdp/.env
+  no_log: true
+
+- name: Build application images on controller
+  ansible.builtin.command:
+    cmd: docker compose build backend frontend
+    chdir: "{{ playbook_dir }}/../.."
+  delegate_to: localhost
+  become: false
+  run_once: true
+  changed_when: false
+
+- name: Save application images on controller
+  ansible.builtin.shell: |
+    set -o pipefail
+    docker save devdp-backend:latest devdp-frontend:latest |
+      gzip -n > /tmp/devdp-images.tar.gz
+  args:
+    executable: /bin/bash
+  delegate_to: localhost
+  become: false
+  run_once: true
+  changed_when: false
+
+- name: Copy application images to app server
+  ansible.builtin.copy:
+    src: /tmp/devdp-images.tar.gz
+    dest: /tmp/devdp-images.tar.gz
+    mode: "0644"
+
+- name: Load application images
+  ansible.builtin.command:
+    cmd: docker load -i /tmp/devdp-images.tar.gz
+  register: docker_load
+  changed_when: "'Loaded image' in docker_load.stdout"
+
+- name: Start application without remote build
+  ansible.builtin.command:
+    cmd: docker compose up -d --no-build
+    chdir: /opt/devdp
+  register: compose_up
+  changed_when: >
+    'Created' in compose_up.stdout or
+    'Started' in compose_up.stdout or
+    'Recreated' in compose_up.stdout
+
+- name: Wait for backend health endpoint
+  ansible.builtin.uri:
+    url: http://127.0.0.1:8000/health
+    status_code: 200
+  register: backend_health
+  retries: 30
+  delay: 3
+  until: backend_health.status == 200
+
+- name: Wait for frontend
+  ansible.builtin.uri:
+    url: http://127.0.0.1:3000/
+    status_code: 200
+  register: frontend_health
+  retries: 30
+  delay: 3
+  until: frontend_health.status == 200

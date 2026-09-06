@@ -2,8 +2,16 @@
 - name: Configure DevOps project servers
   hosts: all
   become: true
+  gather_facts: false
 
   roles:
     - common
     - docker
 
+- name: Deploy application
+  hosts: app
+  become: true
+  gather_facts: false
+
+  roles:
+    - app
