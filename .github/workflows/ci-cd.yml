@@ -495,3 +495,82 @@ jobs:
 
           echo "Frontend: OK"
           echo "Deployment smoke tests passed"
+
+  notify:
+    name: Telegram Notification
+    runs-on: ubuntu-latest
+
+    needs:
+      - backend-checks
+      - frontend-checks
+      - build
+      - publish
+      - deploy
+
+    if: ${{ always() && github.event_name == 'push' }}
+
+    steps:
+      - name: Send build and deployment result
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+
+          BACKEND_RESULT: ${{ needs.backend-checks.result }}
+          FRONTEND_RESULT: ${{ needs.frontend-checks.result }}
+          BUILD_RESULT: ${{ needs.build.result }}
+          PUBLISH_RESULT: ${{ needs.publish.result }}
+          DEPLOY_RESULT: ${{ needs.deploy.result }}
+
+          REPOSITORY: ${{ github.repository }}
+          BRANCH: ${{ github.ref_name }}
+          COMMIT_SHA: ${{ github.sha }}
+          RUN_ID: ${{ github.run_id }}
+          SERVER_URL: ${{ github.server_url }}
+          EVENT_NAME: ${{ github.event_name }}
+
+        run: |
+          set -euo pipefail
+
+          STATUS="✅ SUCCESS"
+
+          if [ "$BACKEND_RESULT" != "success" ] || \
+             [ "$FRONTEND_RESULT" != "success" ] || \
+             [ "$BUILD_RESULT" != "success" ]; then
+            STATUS="❌ FAILED"
+          fi
+
+          if [ "$BRANCH" = "main" ]; then
+            if [ "$PUBLISH_RESULT" != "success" ] || \
+               [ "$DEPLOY_RESULT" != "success" ]; then
+              STATUS="❌ FAILED"
+            fi
+
+            DEPLOY_TEXT="Deployment: ${DEPLOY_RESULT}"
+          else
+            DEPLOY_TEXT="Deployment: not required for this branch"
+          fi
+
+          SHORT_SHA="${COMMIT_SHA:0:7}"
+
+          MESSAGE="${STATUS} — DevDP CI/CD
+
+          Repository: ${REPOSITORY}
+          Branch: ${BRANCH}
+          Commit: ${SHORT_SHA}
+
+          Backend checks: ${BACKEND_RESULT}
+          Frontend checks: ${FRONTEND_RESULT}
+          Docker build: ${BUILD_RESULT}
+          GHCR publish: ${PUBLISH_RESULT}
+          ${DEPLOY_TEXT}
+
+          Run: ${SERVER_URL}/${REPOSITORY}/actions/runs/${RUN_ID}"
+
+          curl \
+            --fail \
+            --silent \
+            --show-error \
+            -X POST \
+            "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
+            --data-urlencode "chat_id=${TELEGRAM_CHAT_ID}" \
+            --data-urlencode "text=${MESSAGE}"
