@@ -381,6 +381,7 @@ jobs:
 
           cd /opt/devdp
 
+          echo "===== LOAD IMAGES ====="
           gzip -dc devdp-images.tar.gz | docker load
 
           if [ ! -f .env ]; then
@@ -394,27 +395,60 @@ jobs:
           EOF
           fi
 
+          echo "===== START CONTAINERS ====="
+
           docker compose \
             -f docker-compose.deploy.yml \
             up -d --remove-orphans
 
-          READY=0
+          wait_for_url() {
+            NAME="$1"
+            URL="$2"
 
-          for attempt in $(seq 1 30); do
-            if curl \
-              -fsS \
-              http://127.0.0.1:8000/health \
-              >/dev/null
-            then
-              READY=1
-              break
-            fi
+            for attempt in $(seq 1 40); do
+              if curl \
+                --fail \
+                --silent \
+                --show-error \
+                --connect-timeout 5 \
+                --max-time 10 \
+                "$URL" \
+                >/dev/null
+              then
+                echo "${NAME}: READY"
+                return 0
+              fi
 
-            echo "Waiting for backend: ${attempt}/30"
-            sleep 3
-          done
+              echo "Waiting for ${NAME}: ${attempt}/40"
+              sleep 3
+            done
 
-          test "$READY" -eq 1
+            echo "${NAME}: FAILED"
+
+            docker compose \
+              -f docker-compose.deploy.yml \
+              ps
+
+            docker compose \
+              -f docker-compose.deploy.yml \
+              logs --tail=100
+
+            return 1
+          }
+
+          echo "===== WAIT FOR SERVICES ====="
+
+          wait_for_url \
+            "Backend" \
+            "http://127.0.0.1:8000/health"
+
+          wait_for_url \
+            "Frontend" \
+            "http://127.0.0.1:3000/"
+
+          wait_for_url \
+            "Frontend API proxy" \
+            "http://127.0.0.1:3000/api/info"
 
           echo "===== BACKEND ====="
           curl -fsS http://127.0.0.1:8000/health
@@ -423,6 +457,10 @@ jobs:
           echo "===== FRONTEND ====="
           curl -fsS http://127.0.0.1:3000/ >/dev/null
           echo "Frontend: OK"
+
+          echo "===== FRONTEND API ====="
+          curl -fsS http://127.0.0.1:3000/api/info
+          echo
 
           echo "===== CONTAINERS ====="
 
