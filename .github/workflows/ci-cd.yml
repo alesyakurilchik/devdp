@@ -131,27 +131,68 @@ jobs:
 
       - name: Smoke test built application
         run: |
-          READY=0
+          set -euo pipefail
 
-          for attempt in $(seq 1 30); do
-            if curl -fsS http://127.0.0.1:8000/health >/dev/null; then
-              READY=1
-              break
-            fi
+          wait_for_url() {
+            NAME="$1"
+            URL="$2"
 
-            sleep 3
-          done
+            for attempt in $(seq 1 40); do
+              if curl \
+                --fail \
+                --silent \
+                --show-error \
+                --connect-timeout 5 \
+                --max-time 10 \
+                "$URL" \
+                >/dev/null
+              then
+                echo "${NAME}: READY"
+                return 0
+              fi
 
-          test "$READY" -eq 1
+              echo "Waiting for ${NAME}: attempt ${attempt}/40"
+              sleep 3
+            done
 
+            echo "${NAME}: FAILED"
+
+            docker compose \
+              --env-file .env.ci \
+              -f docker-compose.deploy.yml \
+              ps
+
+            docker compose \
+              --env-file .env.ci \
+              -f docker-compose.deploy.yml \
+              logs --tail=100
+
+            return 1
+          }
+
+          wait_for_url \
+            "Backend" \
+            "http://127.0.0.1:8000/health"
+
+          wait_for_url \
+            "Frontend" \
+            "http://127.0.0.1:3000/"
+
+          wait_for_url \
+            "Frontend API proxy" \
+            "http://127.0.0.1:3000/api/info"
+
+          echo "===== BACKEND ====="
           curl -fsS http://127.0.0.1:8000/health
-          curl -fsS http://127.0.0.1:3000/ >/dev/null
-          curl -fsS http://127.0.0.1:3000/api/info >/dev/null
+          echo
 
-          docker compose \
-            --env-file .env.ci \
-            -f docker-compose.deploy.yml \
-            ps
+          echo "===== FRONTEND ====="
+          curl -fsS http://127.0.0.1:3000/ >/dev/null
+          echo "Frontend: OK"
+
+          echo "===== FRONTEND API ====="
+          curl -fsS http://127.0.0.1:3000/api/info
+          echo
 
       - name: Create deployment artifact
         run: |
