@@ -104,16 +104,23 @@ resource "yandex_vpc_security_group" "monitoring" {
 
   ingress {
     protocol       = "TCP"
-    description    = "Prometheus"
+    description    = "Prometheus from project subnet"
     port           = 9090
-    v4_cidr_blocks = ["0.0.0.0/0"]
+    v4_cidr_blocks = ["10.10.0.0/24"]
   }
 
   ingress {
     protocol       = "TCP"
-    description    = "Alertmanager"
+    description    = "Alertmanager from project subnet"
     port           = 9093
-    v4_cidr_blocks = ["0.0.0.0/0"]
+    v4_cidr_blocks = ["10.10.0.0/24"]
+  }
+
+  ingress {
+    protocol       = "TCP"
+    description    = "Loki from project subnet"
+    port           = 3100
+    v4_cidr_blocks = ["10.10.0.0/24"]
   }
 
   ingress {

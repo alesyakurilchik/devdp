@@ -10,6 +10,7 @@
     - /opt/devdp-monitoring/alertmanager
     - /opt/devdp-monitoring/alertmanager/secrets
     - /opt/devdp-monitoring/blackbox
+    - /opt/devdp-monitoring/loki
     - /opt/devdp-monitoring/grafana
     - /opt/devdp-monitoring/grafana/provisioning
     - /opt/devdp-monitoring/grafana/provisioning/datasources
@@ -183,6 +184,49 @@
             method: GET
             preferred_ip_protocol: ip4
 
+- name: Create Loki data directory
+  ansible.builtin.file:
+    path: /opt/devdp-monitoring/loki/data
+    state: directory
+    owner: "10001"
+    group: "10001"
+    mode: "0750"
+
+- name: Create Loki configuration
+  ansible.builtin.copy:
+    dest: /opt/devdp-monitoring/loki/loki.yml
+    mode: "0644"
+    content: |
+      auth_enabled: false
+
+      server:
+        http_listen_port: 3100
+
+      common:
+        instance_addr: 127.0.0.1
+        path_prefix: /loki
+        replication_factor: 1
+        ring:
+          kvstore:
+            store: inmemory
+        storage:
+          filesystem:
+            chunks_directory: /loki/chunks
+            rules_directory: /loki/rules
+
+      schema_config:
+        configs:
+          - from: 2024-01-01
+            store: tsdb
+            object_store: filesystem
+            schema: v13
+            index:
+              prefix: index_
+              period: 24h
+
+      limits_config:
+        allow_structured_metadata: true
+
 - name: Create Grafana Prometheus datasource
   ansible.builtin.copy:
     dest: /opt/devdp-monitoring/grafana/provisioning/datasources/prometheus.yml
@@ -197,6 +241,22 @@
           access: proxy
           url: http://prometheus:9090
           isDefault: true
+          editable: false
+
+- name: Create Grafana Loki datasource
+  ansible.builtin.copy:
+    dest: /opt/devdp-monitoring/grafana/provisioning/datasources/loki.yml
+    mode: "0644"
+    content: |
+      apiVersion: 1
+
+      datasources:
+        - name: Loki
+          type: loki
+          uid: loki
+          access: proxy
+          url: http://loki:3100
+          isDefault: false
           editable: false
 
 - name: Create Grafana dashboard provider
@@ -358,6 +418,17 @@
           volumes:
             - ./blackbox/blackbox.yml:/etc/blackbox_exporter/config.yml:ro
 
+        loki:
+          image: grafana/loki:3.7.0
+          restart: unless-stopped
+          ports:
+            - "3100:3100"
+          volumes:
+            - ./loki/loki.yml:/etc/loki/loki.yml:ro
+            - ./loki/data:/loki
+          command:
+            - -config.file=/etc/loki/loki.yml
+
         grafana:
           image: grafana/grafana:11.2.0
           restart: unless-stopped
@@ -393,6 +464,15 @@
   retries: 30
   delay: 3
   until: prometheus_ready.status == 200
+
+- name: Wait for Loki
+  ansible.builtin.uri:
+    url: http://127.0.0.1:3100/ready
+    status_code: 200
+  register: loki_ready
+  retries: 30
+  delay: 3
+  until: loki_ready.status == 200
 
 - name: Wait for Grafana
   ansible.builtin.uri:

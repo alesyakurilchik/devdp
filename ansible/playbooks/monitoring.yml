@@ -14,3 +14,11 @@
 
   roles:
     - monitoring
+
+- name: Deploy logging agents
+  hosts: all
+  become: true
+  gather_facts: false
+
+  roles:
+    - alloy

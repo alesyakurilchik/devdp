@@ -1,0 +1,83 @@
+---
+- name: Create Alloy directories
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  loop:
+    - /opt/devdp-alloy
+    - /opt/devdp-alloy/data
+
+- name: Render Alloy configuration
+  ansible.builtin.template:
+    src: config.alloy.j2
+    dest: /opt/devdp-alloy/config.alloy
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Create Alloy Docker Compose configuration
+  ansible.builtin.copy:
+    dest: /opt/devdp-alloy/docker-compose.yml
+    owner: root
+    group: root
+    mode: "0644"
+    content: |
+      services:
+        alloy:
+          image: grafana/alloy:v1.19.2
+          container_name: devdp-alloy
+          restart: unless-stopped
+
+          volumes:
+            - ./config.alloy:/etc/alloy/config.alloy:ro
+            - ./data:/var/lib/alloy/data
+            - /var/run/docker.sock:/var/run/docker.sock:ro
+
+          command:
+            - run
+            - --storage.path=/var/lib/alloy/data
+            - --disable-reporting
+            - /etc/alloy/config.alloy
+
+- name: Pull Alloy image
+  ansible.builtin.command:
+    cmd: docker pull grafana/alloy:v1.19.2
+  changed_when: false
+
+- name: Validate Alloy configuration
+  ansible.builtin.command:
+    cmd: >
+      docker run
+      --rm
+      -v /opt/devdp-alloy/config.alloy:/etc/alloy/config.alloy:ro
+      grafana/alloy:v1.19.2
+      validate
+      /etc/alloy/config.alloy
+  changed_when: false
+
+- name: Start Alloy
+  ansible.builtin.command:
+    cmd: docker compose up -d
+    chdir: /opt/devdp-alloy
+  register: alloy_compose
+  changed_when: >
+    'Created' in alloy_compose.stdout or
+    'Started' in alloy_compose.stdout or
+    'Recreated' in alloy_compose.stdout
+
+- name: Verify Alloy container
+  ansible.builtin.shell: |
+    set -euo pipefail
+
+    docker compose \
+      -f /opt/devdp-alloy/docker-compose.yml \
+      ps \
+      --status running \
+      --services \
+      | grep -qx alloy
+  args:
+    executable: /bin/bash
+  changed_when: false
