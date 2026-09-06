@@ -64,15 +64,8 @@ resource "yandex_vpc_security_group" "app" {
 
   ingress {
     protocol       = "TCP"
-    description    = "Frontend"
-    port           = 3000
-    v4_cidr_blocks = ["0.0.0.0/0"]
-  }
-
-  ingress {
-    protocol       = "TCP"
-    description    = "Backend API"
-    port           = 8000
+    description    = "Application entrypoint"
+    port           = 80
     v4_cidr_blocks = ["0.0.0.0/0"]
   }
 
@@ -244,11 +237,13 @@ output "ssh_monitoring" {
 }
 
 output "frontend_url" {
-  value = "http://${yandex_compute_instance.app.network_interface[0].nat_ip_address}:3000"
+  description = "Public application URL"
+  value       = "http://${yandex_compute_instance.app.network_interface[0].nat_ip_address}"
 }
 
 output "backend_health_url" {
-  value = "http://${yandex_compute_instance.app.network_interface[0].nat_ip_address}:8000/health"
+  description = "Backend health endpoint through Nginx"
+  value       = "http://${yandex_compute_instance.app.network_interface[0].nat_ip_address}/health"
 }
 
 output "grafana_url" {

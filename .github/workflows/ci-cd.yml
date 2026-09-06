@@ -95,6 +95,12 @@ jobs:
       - backend-checks
       - frontend-checks
 
+    env:
+      IMAGE_TAG: ${{ github.sha }}
+      DB_PASSWORD_FILE: /tmp/devdp-db-password
+      POSTGRES_USER: devops
+      POSTGRES_DB: devops
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -103,14 +109,14 @@ jobs:
         run: |
           docker build \
             --target production \
-            -t devdp-backend:latest \
+            -t "devdp-backend:${IMAGE_TAG}" \
             ./backend
 
       - name: Build frontend image
         run: |
           docker build \
             --target production \
-            -t devdp-frontend:latest \
+            -t "devdp-frontend:${IMAGE_TAG}" \
             ./frontend
 
       - name: Pull PostgreSQL image
@@ -118,16 +124,15 @@ jobs:
 
       - name: Start built application
         run: |
-          cat > .env.ci <<EOF
-          POSTGRES_USER=devops
-          POSTGRES_PASSWORD=ci_test_password
-          POSTGRES_DB=devops
-          EOF
+          set -euo pipefail
+
+          openssl rand -hex 32 > "${DB_PASSWORD_FILE}"
+          chmod 0600 "${DB_PASSWORD_FILE}"
 
           docker compose \
-            --env-file .env.ci \
             -f docker-compose.deploy.yml \
-            up -d
+            up -d \
+            --no-build
 
       - name: Smoke test built application
         run: |
@@ -151,54 +156,44 @@ jobs:
                 return 0
               fi
 
-              echo "Waiting for ${NAME}: attempt ${attempt}/40"
+              echo "Waiting for ${NAME}: ${attempt}/40"
               sleep 3
             done
 
             echo "${NAME}: FAILED"
 
             docker compose \
-              --env-file .env.ci \
               -f docker-compose.deploy.yml \
               ps
 
             docker compose \
-              --env-file .env.ci \
               -f docker-compose.deploy.yml \
               logs --tail=100
 
             return 1
           }
 
-          wait_for_url \
-            "Backend" \
-            "http://127.0.0.1:8000/health"
-
-          wait_for_url \
-            "Frontend" \
-            "http://127.0.0.1:3000/"
-
-          wait_for_url \
-            "Frontend API proxy" \
-            "http://127.0.0.1:3000/api/info"
+          wait_for_url "Backend through Nginx" "http://127.0.0.1/health"
+          wait_for_url "Frontend" "http://127.0.0.1/"
+          wait_for_url "API through Nginx" "http://127.0.0.1/api/info"
 
           echo "===== BACKEND ====="
-          curl -fsS http://127.0.0.1:8000/health
+          curl -fsS http://127.0.0.1/health
           echo
 
           echo "===== FRONTEND ====="
-          curl -fsS http://127.0.0.1:3000/ >/dev/null
+          curl -fsS http://127.0.0.1/ >/dev/null
           echo "Frontend: OK"
 
-          echo "===== FRONTEND API ====="
-          curl -fsS http://127.0.0.1:3000/api/info
+          echo "===== API ====="
+          curl -fsS http://127.0.0.1/api/info
           echo
 
       - name: Create deployment artifact
         run: |
           docker save \
-            devdp-backend:latest \
-            devdp-frontend:latest \
+            "devdp-backend:${IMAGE_TAG}" \
+            "devdp-frontend:${IMAGE_TAG}" \
             postgres:16-alpine \
           | gzip -n > devdp-images.tar.gz
 
@@ -213,9 +208,10 @@ jobs:
         if: always()
         run: |
           docker compose \
-            --env-file .env.ci \
             -f docker-compose.deploy.yml \
             down -v || true
+
+          rm -f "${DB_PASSWORD_FILE}"
 
   publish:
     name: Publish Images to GHCR
@@ -244,36 +240,22 @@ jobs:
       - name: Tag Docker images
         run: |
           docker tag \
-            devdp-backend:latest \
-            ghcr.io/${{ github.repository_owner }}/devdp-backend:${{ github.sha }}
+            "devdp-backend:${GITHUB_SHA}" \
+            "ghcr.io/${{ github.repository_owner }}/devdp-backend:${GITHUB_SHA}"
 
           docker tag \
-            devdp-backend:latest \
-            ghcr.io/${{ github.repository_owner }}/devdp-backend:latest
-
-          docker tag \
-            devdp-frontend:latest \
-            ghcr.io/${{ github.repository_owner }}/devdp-frontend:${{ github.sha }}
-
-          docker tag \
-            devdp-frontend:latest \
-            ghcr.io/${{ github.repository_owner }}/devdp-frontend:latest
+            "devdp-frontend:${GITHUB_SHA}" \
+            "ghcr.io/${{ github.repository_owner }}/devdp-frontend:${GITHUB_SHA}"
 
       - name: Push backend image
         run: |
           docker push \
-            ghcr.io/${{ github.repository_owner }}/devdp-backend:${{ github.sha }}
-
-          docker push \
-            ghcr.io/${{ github.repository_owner }}/devdp-backend:latest
+            "ghcr.io/${{ github.repository_owner }}/devdp-backend:${GITHUB_SHA}"
 
       - name: Push frontend image
         run: |
           docker push \
-            ghcr.io/${{ github.repository_owner }}/devdp-frontend:${{ github.sha }}
-
-          docker push \
-            ghcr.io/${{ github.repository_owner }}/devdp-frontend:latest
+            "ghcr.io/${{ github.repository_owner }}/devdp-frontend:${GITHUB_SHA}"
 
   deploy:
     name: Deploy to Yandex Cloud
@@ -376,30 +358,63 @@ jobs:
 
       - name: Deploy application
         run: |
-          ssh devdp-app 'bash -s' <<'REMOTE'
+          ssh devdp-app "IMAGE_TAG='${GITHUB_SHA}' bash -s" <<'REMOTE'
           set -euo pipefail
 
           cd /opt/devdp
 
           echo "===== LOAD IMAGES ====="
-          gzip -dc devdp-images.tar.gz | docker load
+          gzip -dc devdp-images.tar.gz | sudo docker load
 
-          if [ ! -f .env ]; then
-            umask 077
-            DB_PASSWORD="$(openssl rand -hex 16)"
+          SECRET_DIR="/opt/devdp/secrets"
+          SECRET_FILE="${SECRET_DIR}/db_password"
+          LEGACY_ENV="/opt/devdp/.env"
 
-            cat > .env <<EOF
-          POSTGRES_USER=devops
-          POSTGRES_PASSWORD=${DB_PASSWORD}
-          POSTGRES_DB=devops
-          EOF
+          sudo mkdir -p "${SECRET_DIR}"
+          sudo chown root:root "${SECRET_DIR}"
+          sudo chmod 0700 "${SECRET_DIR}"
+
+          if ! sudo test -s "${SECRET_FILE}"; then
+            LEGACY_PASSWORD=""
+
+            if sudo test -f "${LEGACY_ENV}"; then
+              LEGACY_PASSWORD="$(
+                sudo sed -n 's/^POSTGRES_PASSWORD=//p' "${LEGACY_ENV}" |
+                  head -n 1
+              )"
+            fi
+
+            if [ -n "${LEGACY_PASSWORD}" ]; then
+              printf '%s' "${LEGACY_PASSWORD}" |
+                sudo tee "${SECRET_FILE}" >/dev/null
+            else
+              openssl rand -hex 32 |
+                sudo tee "${SECRET_FILE}" >/dev/null
+            fi
           fi
+
+          sudo chown root:root "${SECRET_FILE}"
+          sudo chmod 0600 "${SECRET_FILE}"
+
+          cat > /tmp/devdp.env <<EOF
+          POSTGRES_USER=devops
+          POSTGRES_DB=devops
+          IMAGE_TAG=${IMAGE_TAG}
+          DB_PASSWORD_FILE=/opt/devdp/secrets/db_password
+          EOF
+
+          sudo mv /tmp/devdp.env /opt/devdp/.env
+          sudo chown root:root /opt/devdp/.env
+          sudo chmod 0600 /opt/devdp/.env
 
           echo "===== START CONTAINERS ====="
 
-          docker compose \
+          sudo docker compose \
+            --env-file /opt/devdp/.env \
             -f docker-compose.deploy.yml \
-            up -d --remove-orphans
+            up -d \
+            --no-build \
+            --remove-orphans
 
           wait_for_url() {
             NAME="$1"
@@ -425,75 +440,84 @@ jobs:
 
             echo "${NAME}: FAILED"
 
-            docker compose \
+            sudo docker compose \
+              --env-file /opt/devdp/.env \
               -f docker-compose.deploy.yml \
               ps
 
-            docker compose \
+            sudo docker compose \
+              --env-file /opt/devdp/.env \
               -f docker-compose.deploy.yml \
               logs --tail=100
 
             return 1
           }
 
-          echo "===== WAIT FOR SERVICES ====="
-
           wait_for_url \
-            "Backend" \
-            "http://127.0.0.1:8000/health"
+            "Backend through Nginx" \
+            "http://127.0.0.1/health"
 
           wait_for_url \
             "Frontend" \
-            "http://127.0.0.1:3000/"
+            "http://127.0.0.1/"
 
           wait_for_url \
-            "Frontend API proxy" \
-            "http://127.0.0.1:3000/api/info"
+            "API through Nginx" \
+            "http://127.0.0.1/api/info"
 
           echo "===== BACKEND ====="
-          curl -fsS http://127.0.0.1:8000/health
+          curl -fsS http://127.0.0.1/health
           echo
 
           echo "===== FRONTEND ====="
-          curl -fsS http://127.0.0.1:3000/ >/dev/null
+          curl -fsS http://127.0.0.1/ >/dev/null
           echo "Frontend: OK"
 
-          echo "===== FRONTEND API ====="
-          curl -fsS http://127.0.0.1:3000/api/info
+          echo "===== API ====="
+          curl -fsS http://127.0.0.1/api/info
           echo
 
           echo "===== CONTAINERS ====="
 
-          docker compose \
+          sudo docker compose \
+            --env-file /opt/devdp/.env \
             -f docker-compose.deploy.yml \
             ps
+
           REMOTE
 
       - name: Post-deploy smoke tests through bastion
         env:
           APP_PRIVATE_HOST: ${{ secrets.APP_PRIVATE_HOST }}
         run: |
-          echo "===== BACKEND THROUGH PRIVATE NETWORK ====="
+          echo "===== APPLICATION THROUGH PRIVATE NETWORK ====="
 
           ssh devdp-bastion \
             "curl --fail --silent --show-error \
             --connect-timeout 10 \
             --max-time 20 \
-            http://${APP_PRIVATE_HOST}:8000/health"
+            http://${APP_PRIVATE_HOST}/health"
 
           echo
-          echo "Backend: OK"
-
-          echo "===== FRONTEND THROUGH PRIVATE NETWORK ====="
+          echo "Backend through Nginx: OK"
 
           ssh devdp-bastion \
             "curl --fail --silent --show-error \
             --connect-timeout 10 \
             --max-time 20 \
-            http://${APP_PRIVATE_HOST}:3000/ \
+            http://${APP_PRIVATE_HOST}/ \
             >/dev/null"
 
           echo "Frontend: OK"
+
+          ssh devdp-bastion \
+            "curl --fail --silent --show-error \
+            --connect-timeout 10 \
+            --max-time 20 \
+            http://${APP_PRIVATE_HOST}/api/info \
+            >/dev/null"
+
+          echo "API proxy: OK"
           echo "Deployment smoke tests passed"
 
   notify:

@@ -8,6 +8,7 @@
     - /opt/devdp-monitoring
     - /opt/devdp-monitoring/prometheus
     - /opt/devdp-monitoring/alertmanager
+    - /opt/devdp-monitoring/alertmanager/secrets
     - /opt/devdp-monitoring/blackbox
     - /opt/devdp-monitoring/grafana
     - /opt/devdp-monitoring/grafana/provisioning
@@ -62,8 +63,9 @@
               - http_2xx
           static_configs:
             - targets:
-                - "http://{{ hostvars['devdp-app']['private_ip'] }}:8000/health"
-                - "http://{{ hostvars['devdp-app']['private_ip'] }}:3000/"
+                - "http://{{ hostvars['devdp-app']['private_ip'] }}/health"
+                - "http://{{ hostvars['devdp-app']['private_ip'] }}/"
+              - "http://{{ hostvars['devdp-app']['private_ip'] }}/api/info"
           relabel_configs:
             - source_labels:
                 - __address__
@@ -110,19 +112,63 @@
                 summary: "High memory usage"
                 description: "Memory usage is above 85% on {{ '{{' }} $labels.instance {{ '}}' }}."
 
+- name: Validate Telegram alerting configuration
+  ansible.builtin.assert:
+    that:
+      - lookup('ansible.builtin.env', 'TG_TOKEN') | length > 0
+      - lookup('ansible.builtin.env', 'TG_CHAT_ID') | length > 0
+    fail_msg: >-
+      TG_TOKEN and TG_CHAT_ID environment variables are required
+      to configure Alertmanager Telegram notifications.
+  no_log: true
+
+- name: Create Alertmanager Telegram token
+  ansible.builtin.copy:
+    dest: /opt/devdp-monitoring/alertmanager/secrets/telegram_bot_token
+    content: "{{ lookup('ansible.builtin.env', 'TG_TOKEN') }}"
+    owner: root
+    group: root
+    mode: "0600"
+  no_log: true
+
 - name: Create Alertmanager configuration
   ansible.builtin.copy:
     dest: /opt/devdp-monitoring/alertmanager/alertmanager.yml
     mode: "0644"
     content: |
+      global:
+        resolve_timeout: 5m
+
       route:
-        receiver: default
+        receiver: telegram
+        group_by:
+          - alertname
+          - instance
         group_wait: 10s
         group_interval: 30s
         repeat_interval: 1h
 
       receivers:
-        - name: default
+        - name: telegram
+          telegram_configs:
+            - bot_token_file: /run/secrets/telegram_bot_token
+              chat_id: {{ lookup('ansible.builtin.env', 'TG_CHAT_ID') | int }}
+              parse_mode: HTML
+              send_resolved: true
+              message: |-
+                {% raw %}{{ if eq .Status "firing" }}🚨 <b>DevDP alert</b>{{ else }}✅ <b>DevDP resolved</b>{{ end }}
+
+                <b>Status:</b> {{ .Status }}
+                <b>Alerts:</b> {{ len .Alerts }}
+
+                {{ range .Alerts }}
+                <b>{{ .Labels.alertname }}</b>
+                {{ if .Labels.instance }}<b>Instance:</b> {{ .Labels.instance }}{{ end }}
+                {{ if .Labels.severity }}<b>Severity:</b> {{ .Labels.severity }}{{ end }}
+                {{ if .Annotations.summary }}<b>Summary:</b> {{ .Annotations.summary }}{{ end }}
+                {{ if .Annotations.description }}<b>Description:</b> {{ .Annotations.description }}{{ end }}
+
+                {{ end }}{% endraw %}
 
 - name: Create Blackbox Exporter configuration
   ansible.builtin.copy:
@@ -304,6 +350,7 @@
             - "9093:9093"
           volumes:
             - ./alertmanager/alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
+            - ./alertmanager/secrets/telegram_bot_token:/run/secrets/telegram_bot_token:ro
 
         blackbox:
           image: prom/blackbox-exporter:v0.25.0
