@@ -66,7 +66,7 @@
             - targets:
                 - "http://{{ hostvars['devdp-app']['private_ip'] }}/health"
                 - "http://{{ hostvars['devdp-app']['private_ip'] }}/"
-              - "http://{{ hostvars['devdp-app']['private_ip'] }}/api/info"
+                - "http://{{ hostvars['devdp-app']['private_ip'] }}/api/info"
           relabel_configs:
             - source_labels:
                 - __address__
