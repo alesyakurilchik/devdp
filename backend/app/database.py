@@ -39,12 +39,7 @@ def _build_database_url() -> str:
     port = os.getenv("DB_PORT", "5432")
     name = os.getenv("DB_NAME", "devops")
 
-    return (
-        "postgresql://"
-        f"{quote_plus(user)}:"
-        f"{quote_plus(password)}"
-        f"@{host}:{port}/{name}"
-    )
+    return f"postgresql://{quote_plus(user)}:{quote_plus(password)}@{host}:{port}/{name}"
 
 
 DATABASE_URL = _build_database_url()
