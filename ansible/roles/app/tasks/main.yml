@@ -61,7 +61,7 @@
     fi
 
     chown root:root "${SECRET_FILE}"
-    chmod 0600 "${SECRET_FILE}"
+    chmod 0444 "${SECRET_FILE}"
   args:
     executable: /bin/bash
   no_log: true

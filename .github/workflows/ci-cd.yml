@@ -127,7 +127,7 @@ jobs:
           set -euo pipefail
 
           openssl rand -hex 32 > "${DB_PASSWORD_FILE}"
-          chmod 0600 "${DB_PASSWORD_FILE}"
+          chmod 0444 "${DB_PASSWORD_FILE}"
 
           docker compose \
             -f docker-compose.deploy.yml \
@@ -394,7 +394,7 @@ jobs:
           fi
 
           sudo chown root:root "${SECRET_FILE}"
-          sudo chmod 0600 "${SECRET_FILE}"
+          sudo chmod 0444 "${SECRET_FILE}"
 
           cat > /tmp/devdp.env <<EOF
           POSTGRES_USER=devops
